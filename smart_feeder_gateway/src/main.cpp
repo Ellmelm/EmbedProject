@@ -9,13 +9,14 @@
 
 // ===================== OBJECT ======================
 WiFiClient espClient;
-WiFiClientSecure client;
+WiFiClientSecure secureClient;
 PubSubClient mqtt(espClient);
-HTTPClient http;
 Servo feederServo;
+unsigned long lastAirNotify = 0;
 unsigned long lastLineNotify = 0;
 bool fed = false;
-
+// ======= ADD THIS PROTOTYPE =======
+void sendDiscord(String message);
 // ===================== PIN ======================
 #define MQ135_PIN 34
 #define LDR_PIN   35
@@ -31,11 +32,8 @@ float weightVal = 0;
 int motionFlag = 0;
 
 // ===================== MQTT CALLBACK ======================
-void sendLineNotify(String msg);
-
 void callback(char* topic, byte* payload, unsigned int length) {
     String payloadStr = "";
-
     for (int i = 0; i < length; i++)
         payloadStr += (char)payload[i];
 
@@ -46,15 +44,13 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
     if (String(topic) == "@msg/alias/ultrasonic") {
         ultrasonic_d = payloadStr.toFloat();
-    }
-    else if (String(topic) == "@msg/alias/weight") {
+    } else if (String(topic) == "@msg/alias/weight") {
         weightVal = payloadStr.toFloat();
-    }
-    else if (String(topic) == "@msg/alias/motion") {
+    } else if (String(topic) == "@msg/alias/motion") {
         motionFlag = payloadStr.toInt();
-        if (motionFlag == 1)
-            sendLineNotify("พบการเคลื่อนไหวของหนูแฮมสเตอร์!");
-    }
+        if (motionFlag == 1) {
+        sendDiscord("พบการเคลื่อนไหวของหนูแฮมสเตอร์!");
+    }}
 }
 
 // ===================== SEND TO FIREBASE ======================
@@ -71,57 +67,50 @@ void sendToFirebase() {
     doc["motion"] = motionFlag;
     doc["timestamp"] = millis();
 
-    String json;
-    serializeJson(doc, json);
+    String jsonStr;
+    serializeJson(doc, jsonStr);
 
-    http.begin(client, url);
-    http.addHeader("Content-Type", "application/json");
-    http.POST(json);
-    http.end();
-
-    Serial.println("Firebase updated");
-}
-
-// ===================== LINE NOTIFY ======================
-void sendLineNotify(String msg) {
-    if (WiFi.status() != WL_CONNECTED) return;
-
-    client.setInsecure();  // ต้องมี
-    http.begin(client, "https://notify-api.line.me/api/notify");
-
-    http.addHeader("Content-Type", "application/x-www-form-urlencoded");
-    http.addHeader("Authorization", "Bearer " + String(LINE_TOKEN));
-
-    int httpCode = http.POST("message=" + msg);
-    Serial.print("LINE HTTP code = ");
-    Serial.println(httpCode);
-
-    http.end();
+    HTTPClient http;
+    if (http.begin(secureClient, url)) {
+        http.addHeader("Content-Type", "application/json");
+        http.POST(jsonStr);
+        http.end();
+        Serial.println("Firebase updated");
+    } else {
+        Serial.println("Firebase connect failed!");
+    }
 }
 
 // ===================== WIFI ======================
 void setupWiFi() {
-
-    // ตั้ง DNS ให้ ESP32 (แก้ปัญหา DNS Failed)
-    ip_addr_t dns1, dns2;
-    ipaddr_aton("8.8.8.8", &dns1);   // Google DNS
-    ipaddr_aton("1.1.1.1", &dns2);   // Cloudflare DNS
-    dns_setserver(0, &dns1);
-    dns_setserver(1, &dns2);
-
+    WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
-    Serial.print("WiFi Connecting");
 
+    Serial.print("WiFi Connecting to hotspot");
     int retry = 0;
-    while (WiFi.status() != WL_CONNECTED && retry < 40) {
-        delay(300);
+    while (WiFi.status() != WL_CONNECTED && retry < 60) {
+        delay(500);
         Serial.print(".");
         retry++;
     }
     Serial.println();
+
     if (WiFi.status() == WL_CONNECTED) {
         Serial.print("Connected IP: ");
         Serial.println(WiFi.localIP());
+
+        // ====== ทดสอบ DNS ======
+        IPAddress ip;
+        Serial.print("Ping Google.com ... ");
+        if (WiFi.hostByName("google.com", ip)) {
+            Serial.print("OK, IP = ");
+            Serial.println(ip);
+        } else {
+            Serial.println("Failed!");
+        }
+
+    } else {
+        Serial.println("WiFi Connection Failed!");
     }
 }
 
@@ -131,23 +120,43 @@ void reconnectMQTT() {
         Serial.println("Connecting NETPIE...");
         if (mqtt.connect(NETPIE_CLIENT_ID, NETPIE_TOKEN, NETPIE_SECRET)) {
             Serial.println("NETPIE Connected");
-
             mqtt.subscribe("@msg/alias/ultrasonic");
             mqtt.subscribe("@msg/alias/weight");
             mqtt.subscribe("@msg/alias/motion");
-
         } else {
             Serial.println("Retry NETPIE…");
             delay(2000);
         }
     }
 }
+// ===================== Discord ======================
+void sendDiscord(String message) {
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi not connected, cannot send Discord.");
+        return;
+    }
+
+    WiFiClientSecure client;
+    client.setInsecure();   // ไม่ใช้ certificate
+
+    HTTPClient http;
+    http.begin(client, DISCORD_WEBHOOK);
+    http.addHeader("Content-Type", "application/json");
+
+    String payload = "{\"username\":\"" DISCORD_USERNAME "\",\"content\":\"" + message + "\"}";
+
+    int httpResponseCode = http.POST(payload);
+    Serial.print("Discord response: ");
+    Serial.println(httpResponseCode);
+
+    http.end();
+}
 
 // ===================== ACTUATOR ======================
 void controlFeeder() {
     if (weightVal < 50 && !fed) {  
         feederServo.write(90);
-        sendLineNotify("เติมอาหารให้หนูแฮมสเตอร์แล้ว!");
+        sendDiscord("เติมอาหารให้หนูแฮมสเตอร์แล้ว!");
         fed = true;
     } else if (weightVal >= 50) {
         feederServo.write(0);
@@ -158,9 +167,9 @@ void controlFeeder() {
 // ===================== SETUP ======================
 void setup() {
     Serial.begin(115200);
-    
+
     setupWiFi();
-    client.setInsecure(); 
+    secureClient.setInsecure();
 
     mqtt.setServer(MQTT_SERVER, MQTT_PORT);
     mqtt.setCallback(callback);
@@ -181,15 +190,15 @@ void loop() {
 
     unsigned long now = millis();
 
-    // ถ้าอากาศแย่ แจ้งเตือน LINE ทุก 1 นาที
+    // แจ้งเตือนอากาศแย่ทุก 1 นาที
     if (airQuality > 3500 && now - lastLineNotify > 60000) {
-        sendLineNotify("ค่าอากาศแฮมสเตอร์สูงผิดปกติ!");
+        sendDiscord("ค่าอากาศแฮมสเตอร์สูงผิดปกติ!");
         lastLineNotify = now;
     }
 
-    // บ้านมืดเกินไป
+    // แจ้งเตือนบ้านมืดเกินไปทุก 1 นาที
     if (lightValue < 500 && now - lastLineNotify > 60000) {
-        sendLineNotify("ความสว่างบ้านแฮมสเตอร์ต่ำเกินไป!");
+        sendDiscord("ความสว่างบ้านแฮมสเตอร์ต่ำเกินไป!");
         lastLineNotify = now;
     }
 
@@ -198,3 +207,4 @@ void loop() {
 
     delay(1000);
 }
+
