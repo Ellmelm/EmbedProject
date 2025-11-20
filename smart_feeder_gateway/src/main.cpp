@@ -7,16 +7,27 @@
 #include <lwip/dns.h>
 #include <lwip/ip_addr.h>
 
+// ===================== THRESHOLD ======================
+#define FOOD_EMPTY      15 //ค่าน้ำหนักอาหารต่ำสุดที่ถือว่า อาหารหมด หรือ ใกล้หมด
+#define FOOD_MAX 20
+#define HAMSTER_NEAR 8//หนูเข้าใกล้ชามอาหารน้อยกว่า 8 cm
+#define AIR_WARNING     3200 //ค่าที่มี กลิ่น/อากาศไม่ดี
+#define AIR_BAD         3500 //ค่าที่มี อากาศแย่มาก/อันตราย
+#define LIGHT_TOO_DARK  400 //ค่าที่ถือว่า มืด
+
 // ===================== OBJECT ======================
 WiFiClient espClient;
 WiFiClientSecure secureClient;
 PubSubClient mqtt(espClient);
 Servo feederServo;
+
 unsigned long lastAirNotify = 0;
-unsigned long lastLineNotify = 0;
+unsigned long lastLightNotify = 0;
 bool fed = false;
+
 // ======= ADD THIS PROTOTYPE =======
 void sendDiscord(String message);
+
 // ===================== PIN ======================
 #define MQ135_PIN 34
 #define LDR_PIN   35
@@ -137,7 +148,7 @@ void sendDiscord(String message) {
     }
 
     WiFiClientSecure client;
-    client.setInsecure();   // ไม่ใช้ certificate
+    client.setInsecure();   
 
     HTTPClient http;
     http.begin(client, DISCORD_WEBHOOK);
@@ -154,15 +165,35 @@ void sendDiscord(String message) {
 
 // ===================== ACTUATOR ======================
 void controlFeeder() {
-    if (weightVal < 50 && !fed) {  
-        feederServo.write(90);
-        sendDiscord("เติมอาหารให้หนูแฮมสเตอร์แล้ว!");
-        fed = true;
-    } else if (weightVal >= 50) {
-        feederServo.write(0);
+    // 1) เช็คว่าอาหารน้อยกว่า 15 และยังไม่ได้เติมรอบนี้
+    if (weightVal < FOOD_EMPTY && !fed) {
+
+        // 2) เช็คว่าแฮมสเตอร์เข้าใกล้หรือยัง (ultrasonic)
+        if (ultrasonic_d < HAMSTER_NEAR) {
+
+            // ปริมาณที่ต้องเติมเพื่อให้ถึง 20g
+            float need = FOOD_MAX - weightVal;
+            if (need < 0) need = 0;
+
+            // แปลง "กรัม" -> "องศาที่ servo หมุน" (คุณปรับได้เอง)
+            int servoPulse = map(need, 0, FOOD_MAX, 0, 90);
+
+            feederServo.write(servoPulse);
+            delay(700);
+            feederServo.write(0);
+
+            sendDiscord("🍽 เติมอาหารให้หนูแฮมสเตอร์แล้ว (" + String(need) + " g)");
+
+            fed = true; // ล็อกไว้รอ reset
+        }
+    }
+
+    // 3) Reset เมื่อมีอาหารถึงระดับปลอดภัย
+    if (weightVal >= FOOD_MAX) {
         fed = false;
     }
 }
+
 
 // ===================== SETUP ======================
 void setup() {
@@ -190,16 +221,21 @@ void loop() {
 
     unsigned long now = millis();
 
-    // แจ้งเตือนอากาศแย่ทุก 1 นาที
-    if (airQuality > 3500 && now - lastLineNotify > 60000) {
-        sendDiscord("ค่าอากาศแฮมสเตอร์สูงผิดปกติ!");
-        lastLineNotify = now;
+    // ======= แจ้งเตือนคุณภาพอากาศ =======
+    if (airQuality > AIR_WARNING && airQuality <= AIR_BAD && now - lastAirNotify > 60000) {
+        sendDiscord("⚠️ คุณภาพอากาศในกรงเริ่มมีกลิ่น (" + String(airQuality) + ")");
+        lastAirNotify = now;
     }
 
-    // แจ้งเตือนบ้านมืดเกินไปทุก 1 นาที
-    if (lightValue < 500 && now - lastLineNotify > 60000) {
-        sendDiscord("ความสว่างบ้านแฮมสเตอร์ต่ำเกินไป!");
-        lastLineNotify = now;
+    if (airQuality > AIR_BAD && now - lastAirNotify > 60000) {
+        sendDiscord("🚨 อากาศแย่มาก! ควรทำความสะอาดกรงด่วน (" + String(airQuality) + ")");
+        lastAirNotify = now;
+    }
+
+    // ======= แจ้งเตือนแสง =========
+    if (lightValue < LIGHT_TOO_DARK && now - lastLightNotify > 60000) {
+        sendDiscord("💡 บ้านแฮมสเตอร์มืดเกินไป (" + String(lightValue) + ")");
+        lastLightNotify = now;
     }
 
     controlFeeder();

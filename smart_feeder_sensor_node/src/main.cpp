@@ -2,6 +2,16 @@
 #include <PubSubClient.h>
 #include "config.h"
 #include "esp_camera.h"
+#include "HX711.h"
+
+// HX711 pins //weight
+#define LOADCELL_DOUT  33
+#define LOADCELL_SCK  32
+HX711 scale;
+
+// HC-SR04 pins //ultrasonic
+#define TRIG_PIN  14
+#define ECHO_PIN  12
 
 // ESP32-CAM (AI THINKER) Pin Map
 #define PWDN_GPIO_NUM     32
@@ -25,6 +35,58 @@
 
 WiFiClient espClient;
 PubSubClient mqtt(espClient);
+
+//=====================================================
+// Frame buffer for AI
+//=====================================================
+static uint8_t prevFrame[160 * 120];
+static uint8_t currFrame[160 * 120];
+bool hasPrev = false;
+
+//==================== GRAYSCALE FRAME ====================
+bool getGrayscaleFrame(uint8_t *buffer) {
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb) return false;
+
+  if (fb->format != PIXFORMAT_GRAYSCALE) {
+    esp_camera_fb_return(fb);
+    return false;
+  }
+
+  memcpy(buffer, fb->buf, 160 * 120);
+  esp_camera_fb_return(fb);
+  return true;
+}
+
+//-------------------------------------
+// SENSOR FUNCTIONS
+//-------------------------------------
+void setupSensors() {
+    // Loadcell
+    scale.begin(LOADCELL_DOUT, LOADCELL_SCK);
+    scale.set_scale(); 
+    scale.tare();
+
+    // Ultrasonic
+    pinMode(TRIG_PIN, OUTPUT);
+    pinMode(ECHO_PIN, INPUT);
+}
+
+    float readUltrasonic() {
+        digitalWrite(TRIG_PIN, LOW);
+        delayMicroseconds(2);
+        digitalWrite(TRIG_PIN, HIGH);
+        delayMicroseconds(10);
+        digitalWrite(TRIG_PIN, LOW);
+
+        long duration = pulseIn(ECHO_PIN, HIGH);
+        float distance_cm = duration * 0.034 / 2;
+        return distance_cm;
+    }
+
+    float readWeight() {
+        return scale.get_units(10); // เฉลี่ย 10 ครั้ง
+    }
 
 // ===================== Setup WiFi =====================
 void setupWiFi() {
@@ -61,34 +123,13 @@ void reconnectMQTT() {
     }
 }
 
-//=====================================================
-// แปลงภาพเป็น grayscale (ใช้ sensor output ตรง)
-//=====================================================
-static uint8_t prevFrame[160 * 120];
-static uint8_t currFrame[160 * 120];
-bool hasPrev = false;
-
-//==================== GET FRAME (GRAYSCALE) ====================
-bool getGrayscaleFrame(uint8_t *buffer) {
-  camera_fb_t *fb = esp_camera_fb_get();
-  if (!fb) return false;
-
-  if (fb->format != PIXFORMAT_GRAYSCALE) {
-    esp_camera_fb_return(fb);
-    return false;
-  }
-
-  memcpy(buffer, fb->buf, 160 * 120);
-  esp_camera_fb_return(fb);
-  return true;
-}
 
 // ===================== Setup =====================
 void setup() {
     Serial.begin(115200);
-    delay(1000); // ให้ Serial พร้อมอ่านก่อน
+    delay(1000); 
 
-     // ========== เพิ่ม: ตั้งค่ากล้อง ==========
+     // ==========ตั้งค่ากล้อง ==========
     camera_config_t config;
     config.ledc_channel = LEDC_CHANNEL_0;
     config.ledc_timer = LEDC_TIMER_0;
@@ -117,7 +158,7 @@ void setup() {
     if (esp_camera_init(&config) != ESP_OK) {
         Serial.println("Camera init failed!");
         //เปิดesp32cam
-        // return;
+        return;
     }
     Serial.println("Camera ready!");
 
@@ -136,63 +177,53 @@ void loop() {
     if (!mqtt.connected()) reconnectMQTT();
     mqtt.loop();
 
-    // เปิดesp32cam
-    // อ่านภาพปัจจุบัน
-//   if (!getGrayscaleFrame(currFrame)) {
-    
-//     Serial.println("Frame error!");
-//     return;
-//   }
+    //---------------------------------
+    // 1) Motion Detection (AI)
+    //---------------------------------
+    if (!getGrayscaleFrame(currFrame)) {
+        Serial.println("Frame error!");
+        return;
+    }
 
-//   // ครั้งแรกยังไม่มีภาพก่อนหน้า
-//   if (!hasPrev) {
-//     memcpy(prevFrame, currFrame, 160*120);
-//     hasPrev = true;
-//     return;
-//   }
+    // ครั้งแรกยังไม่มีภาพก่อนหน้า
+    if (!hasPrev) {
+        memcpy(prevFrame, currFrame, 160*120);
+        hasPrev = true;
+        return;
+    }
 
-//     // ================ AI Motion Detection ===================
-//     long diffCount = 0;
+    //---------------------------------
+    // 1) Motion Detection (AI)
+    //---------------------------------
+    long diffCount = 0;
+    for (int i = 0; i < 160*120; i++) {
+        int diff = abs(currFrame[i] - prevFrame[i]);
+        if (diff > 25) diffCount++;   // pixel เปลี่ยนแปลง
+    }
 
-//     for (int i = 0; i < 160*120; i++) {
-//         int diff = abs(currFrame[i] - prevFrame[i]);
-//         if (diff > 25) diffCount++;   // pixel เปลี่ยนแปลง
-//     }
+    int motion = (diffCount > 1200) ? 1 : 0;  
+    memcpy(prevFrame, currFrame, 160*120);
 
-//     int motion = (diffCount > 1200) ? 1 : 0;  
+    //---------------------------------
+    // 2) Other Sensors
+    //---------------------------------
+    float distance = readUltrasonic();
+    float weight = readWeight();
 
-//     if (motion == 1)
-//         Serial.println("Status: 🐹 ไม่นิ่ง (กำลังเคลื่อนไหว)");
-//     else
-//         Serial.println("Status: 💤 นิ่ง (ไม่ขยับ)");
+    //---------------------------------
+    // 3) Publish
+    //---------------------------------
+    String payload = 
+        "{\"ultrasonic\":" + String(distance) +
+        ",\"weight\":" + String(weight) +
+        ",\"motion\":" + String(motion) + "}";
 
-//     // ส่งค่า motion เข้า NETPIE
-//     mqtt.publish("@msg/alias/motion", String(motion).c_str());
+    mqtt.publish("@msg/alias", payload.c_str());
+    mqtt.publish("@msg/alias/ultrasonic", String(distance).c_str());
+    mqtt.publish("@msg/alias/weight", String(weight).c_str());
+    mqtt.publish("@msg/alias/motion", String(motion).c_str());
 
-//     // เก็บภาพนี้ไว้เทียบรอบหน้า
-//     memcpy(prevFrame, currFrame, 160*120);
-
-//     delay(250);
-
-    // ——— ตัวอย่างข้อมูลที่จะส่ง ———
-    float distance = 35.5;   // ultrasonic
-    float weight   = 120.3;  // loadcell
-    // int motion     = 1;      // motion detection flag
-
-    // สร้าง JSON payload
-    String payload = "{\"ultrasonic\":" + String(distance) + 
-                     ",\"weight\":" + String(weight);
-                    //  ",\"motion\":" + String(motion) + "}";
-
-    // ส่งข้อมูลขึ้น NETPIE
-    // bool sent = mqtt.publish("@msg/alias", payload.c_str());
-    bool sentDistance = mqtt.publish("@msg/alias/ultrasonic", String(distance).c_str());
-    bool sentWeight   = mqtt.publish("@msg/alias/weight", String(weight).c_str());
-    // bool sentMotion   = mqtt.publish("@msg/alias/motion", String(motion).c_str());
-
-    // แสดงผลบน Serial ว่าข้อมูลถูกส่งจริงหรือไม่
-    Serial.print("Published JSON to  -> ");
-    Serial.println("--------------------------");
+    Serial.println(payload);
 
     delay(1500);
 }
