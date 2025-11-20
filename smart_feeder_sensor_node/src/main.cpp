@@ -79,7 +79,7 @@ void setupSensors() {
         delayMicroseconds(10);
         digitalWrite(TRIG_PIN, LOW);
 
-        long duration = pulseIn(ECHO_PIN, HIGH);
+        long duration = pulseIn(ECHO_PIN, HIGH, 25000);
         float distance_cm = duration * 0.034 / 2;
         return distance_cm;
     }
@@ -201,7 +201,7 @@ void loop() {
         if (diff > 25) diffCount++;   // pixel เปลี่ยนแปลง
     }
 
-    int motion = (diffCount > 1200) ? 1 : 0;  
+    int motion = (diffCount > 300) ? 1 : 0;  
     memcpy(prevFrame, currFrame, 160*120);
 
     //---------------------------------

@@ -14,6 +14,7 @@
 #define AIR_WARNING     3200 //ค่าที่มี กลิ่น/อากาศไม่ดี
 #define AIR_BAD         3500 //ค่าที่มี อากาศแย่มาก/อันตราย
 #define LIGHT_TOO_DARK  400 //ค่าที่ถือว่า มืด
+#define STILL_TIMEOUT   300000
 
 // ===================== OBJECT ======================
 WiFiClient espClient;
@@ -21,9 +22,14 @@ WiFiClientSecure secureClient;
 PubSubClient mqtt(espClient);
 Servo feederServo;
 
+unsigned long lastFirebaseSend = 0;
+
 unsigned long lastAirNotify = 0;
 unsigned long lastLightNotify = 0;
 bool fed = false;
+
+unsigned long lastMotionTime = 0;
+bool stillAlertSent = false;
 
 // ======= ADD THIS PROTOTYPE =======
 void sendDiscord(String message);
@@ -59,9 +65,13 @@ void callback(char* topic, byte* payload, unsigned int length) {
         weightVal = payloadStr.toFloat();
     } else if (String(topic) == "@msg/alias/motion") {
         motionFlag = payloadStr.toInt();
+         // ถ้ามีการเคลื่อนไหว
         if (motionFlag == 1) {
-        sendDiscord("พบการเคลื่อนไหวของหนูแฮมสเตอร์!");
-    }}
+            lastMotionTime = millis();   // รีเซ็ตเวลา
+            stillAlertSent = false;      // เคยแจ้งเตือนนิ่งก่อนหน้าไหม
+            sendDiscord("🐹 พบการเคลื่อนไหวของหนูแฮมสเตอร์!");
+        }
+    }
 }
 
 // ===================== SEND TO FIREBASE ======================
@@ -179,7 +189,7 @@ void controlFeeder() {
             int servoPulse = map(need, 0, FOOD_MAX, 0, 90);
 
             feederServo.write(servoPulse);
-            delay(700);
+            delay(1000);
             feederServo.write(0);
 
             sendDiscord("🍽 เติมอาหารให้หนูแฮมสเตอร์แล้ว (" + String(need) + " g)");
@@ -207,6 +217,8 @@ void setup() {
 
     feederServo.attach(SERVO_PIN);
     feederServo.write(0);
+
+    lastMotionTime = millis();
 
     if (!mqtt.connected()) reconnectMQTT();
 }
@@ -237,9 +249,19 @@ void loop() {
         sendDiscord("💡 บ้านแฮมสเตอร์มืดเกินไป (" + String(lightValue) + ")");
         lastLightNotify = now;
     }
-
+    // ======= แจ้งเตือนว่าหนูอยู่นิ่งนานเกินไป=====================================
+    if (motionFlag == 0) {
+        if (!stillAlertSent && (now - lastMotionTime > STILL_TIMEOUT)) {
+            sendDiscord("⚠️ หนูแฮมสเตอร์นิ่งนานเกินไปแล้ว อาจกำลังพัก ตรวจสอบด้วยนะ!");
+            stillAlertSent = true;
+        }
+    }
     controlFeeder();
+    // ส่ง Firebase ทุก 10 วินาที
+if (millis() - lastFirebaseSend > 10000) {
     sendToFirebase();
+    lastFirebaseSend = millis();
+}
 
     delay(1000);
 }
