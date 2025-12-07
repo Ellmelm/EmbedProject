@@ -13,13 +13,12 @@
 #define HAMSTER_NEAR 8//หนูเข้าใกล้ชามอาหารน้อยกว่า 8 cm
 #define AIR_WARNING     3200 //ค่าที่มี กลิ่น/อากาศไม่ดี
 #define AIR_BAD         3500 //ค่าที่มี อากาศแย่มาก/อันตราย
-#define LIGHT_TOO_DARK  400 //ค่าที่ถือว่า มืด
+#define LIGHT_TOO_MUCH  500 //ค่าที่ถือว่า สว่างเกินไป
 #define STILL_TIMEOUT   300000
 
 // ===================== OBJECT ======================
-WiFiClient espClient;
-WiFiClientSecure secureClient;
-PubSubClient mqtt(espClient);
+WiFiClient client;
+PubSubClient mqtt(client);
 Servo feederServo;
 
 unsigned long lastFirebaseSend = 0;
@@ -37,7 +36,7 @@ void sendDiscord(String message);
 // ===================== PIN ======================
 #define MQ135_PIN 34
 #define LDR_PIN   35
-#define SERVO_PIN 13
+#define SERVO_PIN 14 //
 
 // ค่าเซนเซอร์ Gateway
 int airQuality = 0;
@@ -59,9 +58,9 @@ void callback(char* topic, byte* payload, unsigned int length) {
     Serial.print(" = ");
     Serial.println(payloadStr);
 
-    if (String(topic) == "@msg/alias/ultrasonic") {
+    if (String(topic) == "@msg/sensor_node/ultrasonic"){
         ultrasonic_d = payloadStr.toFloat();
-    } else if (String(topic) == "@msg/alias/weight") {
+    } else if (String(topic) == "@msg/sensor_node/weight") {
         weightVal = payloadStr.toFloat();
     } else if (String(topic) == "@msg/alias/motion") {
         motionFlag = payloadStr.toInt();
@@ -92,7 +91,7 @@ void sendToFirebase() {
     serializeJson(doc, jsonStr);
 
     HTTPClient http;
-    if (http.begin(secureClient, url)) {
+    if (http.begin(client, url)) {
         http.addHeader("Content-Type", "application/json");
         http.POST(jsonStr);
         http.end();
@@ -141,8 +140,8 @@ void reconnectMQTT() {
         Serial.println("Connecting NETPIE...");
         if (mqtt.connect(NETPIE_CLIENT_ID, NETPIE_TOKEN, NETPIE_SECRET)) {
             Serial.println("NETPIE Connected");
-            mqtt.subscribe("@msg/alias/ultrasonic");
-            mqtt.subscribe("@msg/alias/weight");
+            mqtt.subscribe("@msg/sensor_node/ultrasonic");  // ★ แก้
+            mqtt.subscribe("@msg/sensor_node/weight");      // ★ แก้
             mqtt.subscribe("@msg/alias/motion");
         } else {
             Serial.println("Retry NETPIE…");
@@ -173,34 +172,35 @@ void sendDiscord(String message) {
     http.end();
 }
 
-// ===================== ACTUATOR ======================
 void controlFeeder() {
-    // 1) เช็คว่าอาหารน้อยกว่า 15 และยังไม่ได้เติมรอบนี้
-    if (weightVal < FOOD_EMPTY && !fed) {
+    // ======= เงื่อนไขเริ่มเติมอาหาร =======
+    // หากน้ำหนักต่ำกว่า 20 g → ต้องเติม
+    if (weightVal < FOOD_MAX) {
 
-        // 2) เช็คว่าแฮมสเตอร์เข้าใกล้หรือยัง (ultrasonic)
+        // เช็คว่าหนูเข้าใกล้ชามหรือยัง
         if (ultrasonic_d < HAMSTER_NEAR) {
 
-            // ปริมาณที่ต้องเติมเพื่อให้ถึง 20g
-            float need = FOOD_MAX - weightVal;
-            if (need < 0) need = 0;
+            // ★ แก้ใหม่: หมุน servo แบบค้าง (ไม่ใช้ map/need)
+            feederServo.write(60);    // หมุนตามอัตราอาหารไหล
+            Serial.println("Feeding... servo rotating");
 
-            // แปลง "กรัม" -> "องศาที่ servo หมุน" (คุณปรับได้เอง)
-            int servoPulse = map(need, 0, FOOD_MAX, 0, 90);
-
-            feederServo.write(servoPulse);
-            delay(1000);
-            feederServo.write(0);
-
-            sendDiscord("🍽 เติมอาหารให้หนูแฮมสเตอร์แล้ว (" + String(need) + " g)");
-
-            fed = true; // ล็อกไว้รอ reset
+            // ส่ง Discord เฉพาะครั้งแรกที่เริ่มหมุน
+            if (!fed) {
+                sendDiscord("🍽 เริ่มเติมอาหารให้หนูแฮมสเตอร์...");
+                fed = true;  // ล็อกว่าเริ่มรอบนี้แล้ว
+            }
         }
-    }
 
-    // 3) Reset เมื่อมีอาหารถึงระดับปลอดภัย
-    if (weightVal >= FOOD_MAX) {
-        fed = false;
+    } 
+    // ======= หยุดเติมเมื่อถึง ≥ 20 g =======
+    else {
+        feederServo.write(0);     // ★ แก้ใหม่: หยุดทันทีเมื่อได้ 20g
+        Serial.println("Feeding completed. Servo stopped.");
+
+        if (fed) {
+            sendDiscord("✅ อาหารครบ 20g แล้ว หยุดเติมเรียบร้อย!");
+            fed = false;  // รีเซ็ตรอบใหม่
+        }
     }
 }
 
@@ -210,7 +210,7 @@ void setup() {
     Serial.begin(115200);
 
     setupWiFi();
-    secureClient.setInsecure();
+    
 
     mqtt.setServer(MQTT_SERVER, MQTT_PORT);
     mqtt.setCallback(callback);
@@ -231,6 +231,12 @@ void loop() {
     airQuality = analogRead(MQ135_PIN);
     lightValue = analogRead(LDR_PIN);
 
+       // ======== PUBLISH GATEWAY SENSOR TO NETPIE (SEPARATE TOPICS) ========
+    mqtt.publish("@msg/gateway/air", String(airQuality).c_str());
+    mqtt.publish("@msg/gateway/light", String(lightValue).c_str());
+    mqtt.publish("@msg/gateway/fed", String(fed).c_str());
+    // ===================================================================
+
     unsigned long now = millis();
 
     // ======= แจ้งเตือนคุณภาพอากาศ =======
@@ -245,8 +251,8 @@ void loop() {
     }
 
     // ======= แจ้งเตือนแสง =========
-    if (lightValue < LIGHT_TOO_DARK && now - lastLightNotify > 60000) {
-        sendDiscord("💡 บ้านแฮมสเตอร์มืดเกินไป (" + String(lightValue) + ")");
+    if (lightValue > LIGHT_TOO_MUCH && now - lastLightNotify > 60000) {
+        sendDiscord("💡 บ้านแฮมสเตอร์สว่างเกินไป (" + String(lightValue) + ")");
         lastLightNotify = now;
     }
     // ======= แจ้งเตือนว่าหนูอยู่นิ่งนานเกินไป=====================================
@@ -262,7 +268,5 @@ if (millis() - lastFirebaseSend > 10000) {
     sendToFirebase();
     lastFirebaseSend = millis();
 }
-
     delay(1000);
 }
-
