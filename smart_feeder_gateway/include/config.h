@@ -1,11 +1,13 @@
 // #define WIFI_SSID "yada"
 // #define WIFI_PASS "proudppp"
-#define WIFI_SSID "Bostonhandsomeandcool"
-#define WIFI_PASS "11111111"
+// #define WIFI_SSID "Bostonhandsomeandcool"
+// #define WIFI_PASS "11111111"
+#define WIFI_SSID "Elm"
+#define WIFI_PASS "12345678"
 
-#define NETPIE_CLIENT_ID "26558ad6-b25c-4ead-8f68-cc4850787ac7"
-#define NETPIE_TOKEN     "EdEvqhyckP2crZHL1p82682Eh2L1rgS2"
-#define NETPIE_SECRET    "Ty76kZ1PS7kRSXexRirCen1naqC855DM"
+#define NETPIE_CLIENT_ID "1f7455b3-b93c-45b9-952a-3b7ee2e32b18"
+#define NETPIE_TOKEN     "DRRsB8m7TknRHesvGYT15kwN5KYHUrMX"
+#define NETPIE_SECRET    "CsPQggPYpWxZoqxrVQHs1AV23WDGZsxt"
 
 #define MQTT_SERVER "mqtt.netpie.io"
 #define MQTT_PORT 1883

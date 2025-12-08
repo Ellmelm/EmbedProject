@@ -21,26 +21,15 @@ PubSubClient mqtt(espClient);
 //-------------------------------------
 // SENSOR FUNCTIONS
 //-------------------------------------
-// void setupSensors() {
-//     // Loadcell
-//     scale.begin(LOADCELL_DOUT, LOADCELL_SCK);
-//     delay(500);          // ★ ให้ HX711 stabilize
-//     scale.set_scale(CALIBRATION_FACTOR);
-//     scale.tare();
-//     delay(500);          // ★ ให้ผล tare คงที่
-
-//     // Ultrasonic
-//     pinMode(TRIG_PIN, OUTPUT);
-//     pinMode(ECHO_PIN, INPUT);
-// }
 void setupSensors() {
+    // Loadcell
     scale.begin(LOADCELL_DOUT, LOADCELL_SCK);
-    delay(500);      
+    delay(500);          // ★ ให้ HX711 stabilize
+    scale.set_scale(CALIBRATION_FACTOR);
+    scale.tare();
+    delay(500);          // ★ ให้ผล tare คงที่
 
-    // ⭐ ไม่ calibrate
-    scale.set_scale(1.0);   // ไม่แปลงตามค่าจริง แค่เอาค่าดิบมาใช้เป็น "กรัมประมาณค่า"
-    // scale.tare();        // ❌ ไม่ใช้
-
+    // Ultrasonic
     pinMode(TRIG_PIN, OUTPUT);
     pinMode(ECHO_PIN, INPUT);
 }
@@ -60,17 +49,18 @@ float readUltrasonic() {
     return distance_cm;
 }
 
+float lastWeight = 0;
+
 float readWeight() {
-    // อ่านน้ำหนักแบบเฉลี่ย 20 ครั้ง เพื่อลด noise
-    float weight_grams = scale.get_units(20);
+    float w = scale.get_units(3);
 
-    // ป้องกันค่าน้ำหนักติดลบ
-    if (weight_grams < 0) weight_grams = 0;
+    // Low-pass filter (กันกระเด้ง)
+    lastWeight = (lastWeight * 0.7) + (w * 0.3);
 
-    Serial.print("Weight (g) = ");
-    Serial.println(weight_grams);
+    Serial.print("Filtered weight = ");
+    Serial.println(lastWeight);
 
-    return weight_grams;
+    return lastWeight;
 }
 
 // ===================== Setup WiFi =====================

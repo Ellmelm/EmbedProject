@@ -58,19 +58,27 @@ void callback(char* topic, byte* payload, unsigned int length) {
     Serial.print(" = ");
     Serial.println(payloadStr);
 
-    if (String(topic) == "@msg/sensor_node/ultrasonic"){
+    String t = String(topic);
+    t.trim();
+    if (t.equals("@msg/sensor_node/ultrasonic")){
         ultrasonic_d = payloadStr.toFloat();
-    } else if (String(topic) == "@msg/sensor_node/weight") {
-        weightVal = payloadStr.toFloat();
-    } else if (String(topic) == "@msg/alias/motion") {
-        motionFlag = payloadStr.toInt();
-         // ถ้ามีการเคลื่อนไหว
-        if (motionFlag == 1) {
-            lastMotionTime = millis();   // รีเซ็ตเวลา
-            stillAlertSent = false;      // เคยแจ้งเตือนนิ่งก่อนหน้าไหม
-            sendDiscord("🐹 พบการเคลื่อนไหวของหนูแฮมสเตอร์!");
-        }
     }
+    else if (t.equals("@msg/sensor_node/weight")){
+        weightVal = payloadStr.toFloat();
+    }
+    // if (String(topic) == "@msg/sensor_node/ultrasonic"){
+    //     ultrasonic_d = payloadStr.toFloat();
+    // } else if (String(topic) == "@msg/sensor_node/weight") {
+    //     weightVal = payloadStr.toFloat();
+    // } else if (String(topic) == "@msg/alias/motion") {
+    //     motionFlag = payloadStr.toInt();
+    //      // ถ้ามีการเคลื่อนไหว
+    //     if (motionFlag == 1) {
+    //         lastMotionTime = millis();   // รีเซ็ตเวลา
+    //         stillAlertSent = false;      // เคยแจ้งเตือนนิ่งก่อนหน้าไหม
+    //         sendDiscord("🐹 พบการเคลื่อนไหวของหนูแฮมสเตอร์!");
+    //     }
+    // }
 }
 
 // ===================== SEND TO FIREBASE ======================
@@ -171,36 +179,88 @@ void sendDiscord(String message) {
 
     http.end();
 }
+int stableCount = 0;
 
-void controlFeeder() {
-    // ======= เงื่อนไขเริ่มเติมอาหาร =======
-    // หากน้ำหนักต่ำกว่า 20 g → ต้องเติม
-    if (weightVal < FOOD_MAX) {
+// =================== CONFIG ===================
+const float FOOD_TARGET = 20.0;        // เป้าหมาย 20 g
+const float FOOD_DEADBAND = 0.5;       // ค่าที่อนุญาตให้แกว่ง +-0.5g
+const float FOOD_START_THRESHOLD = 20; // ถ้า < 20g ให้เริ่ม feed
 
-        // เช็คว่าหนูเข้าใกล้ชามหรือยัง
-        if (ultrasonic_d < HAMSTER_NEAR) {
 
-            // ★ แก้ใหม่: หมุน servo แบบค้าง (ไม่ใช้ map/need)
-            feederServo.write(60);    // หมุนตามอัตราอาหารไหล
-            Serial.println("Feeding... servo rotating");
+// =================== CONTROL FEEDER ===================
+// void controlFeeder() {
 
-            // ส่ง Discord เฉพาะครั้งแรกที่เริ่มหมุน
-            if (!fed) {
-                sendDiscord("🍽 เริ่มเติมอาหารให้หนูแฮมสเตอร์...");
-                fed = true;  // ล็อกว่าเริ่มรอบนี้แล้ว
-            }
-        }
+//     // =================== START FEED MODE ===================
+//     // เงื่อนไขเริ่มให้อาหาร: น้ำหนัก < 20g AND หนูอยู่ใกล้
+//     if (!fed && weightVal < FOOD_START_THRESHOLD) {
+//         if (ultrasonic_d < HAMSTER_NEAR) {
 
-    } 
-    // ======= หยุดเติมเมื่อถึง ≥ 20 g =======
-    else {
-        feederServo.write(0);     // ★ แก้ใหม่: หยุดทันทีเมื่อได้ 20g
-        Serial.println("Feeding completed. Servo stopped.");
+//             // เข้าโหมด feeding
+//             fed = true;
+//             stableCount = 0;
 
-        if (fed) {
-            sendDiscord("✅ อาหารครบ 20g แล้ว หยุดเติมเรียบร้อย!");
-            fed = false;  // รีเซ็ตรอบใหม่
-        }
+//             feederServo.write(30);   // เปิดประตูอาหารค้างไว้
+//             Serial.println("Feeding START");
+//             sendDiscord("🍽 เริ่มให้อาหาร...");
+//         }
+//     }
+
+//     // =================== FEEDING MODE ===================
+//     if (fed) {
+
+//         // เปิดค้างไว้เสมอ ไม่สั่งปิดเองเด็ดขาด
+//         feederServo.write(30);
+//         Serial.println("Feeding... Servo OPEN");
+
+//         // ---------- เช็คว่าน้ำหนักถึง 20g หรือยัง ----------
+//         // ถ้าน้ำหนัก >= (FOOD_TARGET - DEAD_BAND)
+//         // ตัวอย่าง: >= 19.5g
+//         if (weightVal >= FOOD_TARGET - FOOD_DEADBAND) {
+//             stableCount++;
+//         } else {
+//             stableCount = 0; // ยังไม่ถึง 20g => รีเซ็ต
+//         }
+
+//         // ---------- หยุดเมื่อหนักเกิน 20g แบบนิ่งจริง 3 ครั้ง ----------
+//         if (stableCount >= 3) {
+//             feederServo.write(0); // ปิดถาดอาหาร
+//             Serial.println("Feeding STOP (20g stable)");
+//             sendDiscord("✅ อาหารถึง 20g แบบนิ่งแล้ว หยุดให้อาหาร");
+//             fed = false;
+//         }
+//     }
+// }
+bool lightFeeding = false;
+unsigned long lightFeedStart = 0;
+bool lightTrigger = false;   // ทำงานครั้งเดียวต่อรอบแสง
+
+void lightFeeder() {
+
+    // ❶ แสงลดต่ำกว่า 300 ครั้งแรก → ให้เริ่มหมุน
+    if (lightValue < 300 && !lightTrigger && !lightFeeding) {
+        fed = true; 
+        mqtt.publish("@msg/gateway/fed", "1");
+        lightTrigger = true;          // ล็อกไม่ให้ทำซ้ำ
+        lightFeeding = true;
+        lightFeedStart = millis();
+
+        feederServo.write(45);        // เปิด
+        Serial.println("Light condition: Servo OPEN (5 sec)");
+        sendDiscord("เติมอาหารแล้ว!");
+    }
+
+    // ❷ หมุนให้ครบ 5 วินาที แล้วปิด
+    if (lightFeeding && millis() - lightFeedStart >= 5000) {
+        fed = false; 
+        mqtt.publish("@msg/gateway/fed", "0");
+        feederServo.write(0);         // ปิด
+        // lightFeeding = false;
+        Serial.println("Light condition: Servo CLOSE");
+    }
+
+    // ❸ ถ้าแสงกลับมามากกว่า 300 → reset trigger เพื่อให้ทำงานรอบใหม่ได้
+    if (lightValue >= 300) {
+        lightTrigger = false;
     }
 }
 
@@ -221,6 +281,13 @@ void setup() {
     lastMotionTime = millis();
 
     if (!mqtt.connected()) reconnectMQTT();
+    if(mqtt.connected()){
+        mqtt.subscribe("@msg/sensor_node/ultrasonic");  // ★ แก้
+        mqtt.subscribe("@msg/sensor_node/weight");      // ★ แก้
+        mqtt.subscribe("@msg/alias/motion");
+
+        // mqtt.publish("@msg/gateway/fed", String(fed).c_str());
+    }
 }
 
 // ===================== LOOP ======================
@@ -256,17 +323,18 @@ void loop() {
         lastLightNotify = now;
     }
     // ======= แจ้งเตือนว่าหนูอยู่นิ่งนานเกินไป=====================================
-    if (motionFlag == 0) {
-        if (!stillAlertSent && (now - lastMotionTime > STILL_TIMEOUT)) {
-            sendDiscord("⚠️ หนูแฮมสเตอร์นิ่งนานเกินไปแล้ว อาจกำลังพัก ตรวจสอบด้วยนะ!");
-            stillAlertSent = true;
-        }
-    }
-    controlFeeder();
+    // if (motionFlag == 0) {
+    //     if (!stillAlertSent && (now - lastMotionTime > STILL_TIMEOUT)) {
+    //         sendDiscord("⚠️ หนูแฮมสเตอร์นิ่งนานเกินไปแล้ว อาจกำลังพัก ตรวจสอบด้วยนะ!");
+    //         stillAlertSent = true;
+    //     }
+    // }
+    // controlFeeder();
+    lightFeeder();
     // ส่ง Firebase ทุก 10 วินาที
 if (millis() - lastFirebaseSend > 10000) {
     sendToFirebase();
     lastFirebaseSend = millis();
 }
-    delay(1000);
+    delay(600);
 }
